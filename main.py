@@ -52,7 +52,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Add loan conversation
 async def addloan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("نام بانک را وارد کنید:")
+    # Support both /addloan (message) and inline button (callback query)
+    if getattr(update, "callback_query", None):
+        query = update.callback_query
+        await query.answer()
+        context.user_data.clear()
+        # ارسال پیام جدید به‌جای ادیت، تا محدودیت‌های ادیت مزاحم نشوند
+        await query.message.reply_text("نام بانک را وارد کنید:")
+    else:
+        await update.message.reply_text("نام بانک را وارد کنید:")
     return ADD_BANK
 
 async def addloan_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,10 +211,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data  # menu|add or menu|myloans
 
     if data == "menu|add":
-        # reset conversation and start fresh
+        # این مسیر در handler اختصاصی شروع مکالمه مدیریت می‌شود.
+        # اینجا فقط برای سازگاری قدیمی پیام راهنما می‌فرستیم (بدون تغییر state).
         context.user_data.clear()
         await query.message.reply_text("نام بانک را وارد کنید:")
-        return ADD_BANK
+        return
 
     elif data == "menu|myloans":
         await myloans_list(update, context)
@@ -246,6 +255,15 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup(buttons)
     await send_func("\n".join(text_lines), reply_markup=keyboard)
+
+# entry point to start add-loan conversation via inline button (menu|add)
+async def menu_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # start fresh conversation state
+    context.user_data.clear()
+    await query.edit_message_text("نام بانک را وارد کنید:")
+    return ADD_BANK
 
 # pay callback (mark installment paid)
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,7 +373,10 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("addloan", addloan_start)],
+        entry_points=[
+            CommandHandler("addloan", addloan_start),
+            CallbackQueryHandler(addloan_start, pattern=r"^menu\|add$")
+        ],
         states={
             ADD_BANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_bank)],
             ADD_PRINCIPAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_principal)],
@@ -364,13 +385,15 @@ def main():
             ADD_CALENDAR: [CallbackQueryHandler(calendar_callback, pattern=r"^cal\|")],
             # reminder callback
         },
-        fallbacks=[]
+        fallbacks=[],
+        allow_reentry=True
     )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern=r"^rem\|"))
-    app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu\|"))
+    # exclude menu|add here so ConversationHandler entry point handles it
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu\|(?!add$)"))
     app.add_handler(CallbackQueryHandler(loan_detail_callback, pattern=r"^loan\|detail\|"))
     app.add_handler(CallbackQueryHandler(pay_callback, pattern=r"^pay\|"))
     app.add_handler(CommandHandler("myloans", myloans_list))
