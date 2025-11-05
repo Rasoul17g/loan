@@ -26,4 +26,21 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Databases (local/dev)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# SQL dumps / exports
+*.sql
+*.sqlite.sql
+dumps/
+
+# Secrets / environment configs
+.env
+.env.*
+*.env
 
