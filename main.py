@@ -43,21 +43,52 @@ def jalali_to_gregorian_date(jalali_str):
 def format_currency(n):
     return f"{n:,.2f}"
 
+
+def get_local_today():
+    tz = pytz.timezone(TIMEZONE)
+    return datetime.datetime.now(tz).date()
+
+
+def due_range_label(days: int) -> str:
+    mapping = {
+        1: "۱ روز آینده",
+        3: "۳ روز آینده",
+        7: "۷ روز آینده",
+    }
+    return mapping.get(days, f"{days} روز آینده")
+
 def main_reply_keyboard():
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("➕ افزودن وام جدید"), KeyboardButton("💼 وام‌های من")],
+            [
+                KeyboardButton("➕ افزودن وام جدید"),
+                KeyboardButton("💼 وام‌های من"),
+            ],
+            [KeyboardButton("📅 سررسیدهای نزدیک")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
         selective=False,
     )
 
+
 def main_menu_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")],
         [InlineKeyboardButton("💼 وام‌های من", callback_data="menu|myloans")],
+        [InlineKeyboardButton("📅 سررسیدهای نزدیک", callback_data="menu|due")],
         [InlineKeyboardButton("ℹ️ راهنما", callback_data="menu|help")]
+    ])
+
+
+def due_range_markup():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("1 روز آینده", callback_data="due|1"),
+            InlineKeyboardButton("3 روز آینده", callback_data="due|3"),
+            InlineKeyboardButton("7 روز آینده", callback_data="due|7"),
+        ],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="menu|home")],
     ])
 
 # Handlers
@@ -253,19 +284,83 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    elif data == "menu|due":
+        await query.edit_message_text(
+            "کدام بازه زمانی را می‌خواهی؟",
+            reply_markup=due_range_markup()
+        )
+        return
+
     elif data == "menu|home":
         await query.edit_message_text(
-            "منوی اصلی 👇",
+            "یکی از گزینه‌های زیر را انتخاب کن:",
             reply_markup=main_menu_markup()
-        )
-        await query.message.reply_text(
-            "منوی اصلی 👇",
-            reply_markup=main_reply_keyboard()
         )
         return ConversationHandler.END
 
     else:
         await query.message.reply_text("دستور ناشناخته.", reply_markup=main_reply_keyboard())
+
+# Upcoming due date helpers
+async def open_due_menu_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "کدام بازه زمانی را می‌خواهی؟",
+        reply_markup=due_range_markup()
+    )
+
+
+def collect_upcoming_installments(session, user_id: int, days: int):
+    today = get_local_today()
+    end = today + datetime.timedelta(days=days)
+    q = (
+        session.query(Installment)
+        .join(Loan)
+        .filter(
+            Loan.user_id == user_id,
+            Installment.is_paid.is_(False),
+            Installment.due_date >= today,
+            Installment.due_date <= end,
+        )
+        .order_by(Installment.due_date.asc(), Installment.sequence_number.asc())
+    )
+    return q.all()
+
+
+async def due_range_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("|")
+    try:
+        days = int(parts[1])
+    except (IndexError, ValueError):
+        await query.edit_message_text("بازه نامعتبر است. دوباره انتخاب کن.", reply_markup=due_range_markup())
+        return
+
+    session = get_session()
+    try:
+        user = session.query(User).filter_by(chat_id=query.message.chat.id).first()
+        if not user:
+            await query.edit_message_text("ابتدا /start را اجرا کن تا ثبت‌نام شوی.", reply_markup=main_menu_markup())
+            return
+
+        installments = collect_upcoming_installments(session, user.id, days)
+        label = due_range_label(days)
+        if not installments:
+            text = f"⏰ در بازه {label} هیچ قسط سررسیدی نداری."
+        else:
+            lines = [f"⏰ سررسیدهای {label}:"]
+            for inst in installments:
+                jd = jdatetime.date.fromgregorian(date=inst.due_date)
+                loan = inst.loan
+                lines.append(
+                    f"• {jd.year}/{jd.month}/{jd.day} — وام #{loan.id} ({loan.bank})\n"
+                    f"  قسط {inst.sequence_number}: {format_currency(inst.amount_total)} تومان"
+                )
+            text = "\n".join(lines)
+
+        await query.edit_message_text(text, reply_markup=due_range_markup())
+    finally:
+        session.close()
 
 # myloans command / handler
 async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,10 +377,8 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📋 شما هنوز ثبت‌نام نکردید. اول دستور /start رو بزن."
         if query:
             await query.edit_message_text(text, reply_markup=main_menu_markup())
-            await query.message.reply_text("منوی اصلی 👇", reply_markup=main_reply_keyboard())
         else:
             await update.message.reply_text(text, reply_markup=main_menu_markup())
-            await update.message.reply_text("منوی اصلی 👇", reply_markup=main_reply_keyboard())
         return
 
     loans = session.query(Loan).filter_by(user_id=user.id).all()
@@ -293,27 +386,25 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "💼 هنوز هیچ وامی ثبت نکردی. از دکمه «➕ افزودن وام جدید» استفاده کن."
         if query:
             await query.edit_message_text(text, reply_markup=main_menu_markup())
-            await query.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
         else:
             await update.message.reply_text(text, reply_markup=main_menu_markup())
-            await update.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
         return
 
     text_lines = ["💼 فهرست وام‌های شما:"]
     buttons = []
     for loan in loans:
-        text_lines.append(f"🔸 {loan.id}. {loan.bank} — {loan.loan_name}")
-        buttons.append([InlineKeyboardButton(f"جزئیات وام {loan.id}", callback_data=f"loan|detail|{loan.id}")])
+        display_name = loan.loan_name or loan.bank or f"وام #{loan.id}"
+        bank_part = f" — {loan.bank}" if loan.bank and loan.bank != loan.loan_name else ""
+        text_lines.append(f"🔸 وام شماره {loan.id} — {display_name}{bank_part}")
+        buttons.append([InlineKeyboardButton(f"وام شماره {loan.id} — {display_name}", callback_data=f"loan|detail|{loan.id}")])
 
     buttons.append([InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")])
     buttons.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu|home")])
     keyboard = InlineKeyboardMarkup(buttons)
     if query:
         await query.edit_message_text("\n".join(text_lines), reply_markup=keyboard)
-        await query.message.reply_text("برای ادامه از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
     else:
         await update.message.reply_text("\n".join(text_lines), reply_markup=keyboard)
-        await update.message.reply_text("برای ادامه از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
 
 # pay callback (mark installment paid)
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,15 +476,13 @@ async def loan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "منوی اصلی 👇"
+    text = "یکی از گزینه‌های زیر را انتخاب کن:"
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         await query.edit_message_text(text, reply_markup=main_menu_markup())
-        await query.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
     elif update.message:
         await update.message.reply_text(text, reply_markup=main_menu_markup())
-        await update.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
 
 
 # Scheduled job: send reminders daily
@@ -462,7 +551,12 @@ def main():
         filters.TEXT & ~filters.COMMAND & filters.Regex(r"^💼 وام‌های من$"),
         myloans_list
     ))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r"^📅 سررسیدهای نزدیک$"),
+        open_due_menu_from_message
+    ))
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern=r"^rem\|"))
+    app.add_handler(CallbackQueryHandler(due_range_callback, pattern=r"^due\|"))
     # exclude menu|add here so ConversationHandler entry point handles it
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu\|(?!add$)"))
     app.add_handler(CallbackQueryHandler(loan_detail_callback, pattern=r"^loan\|detail\|"))
