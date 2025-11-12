@@ -5,7 +5,13 @@ import datetime
 import jdatetime
 import pytz
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, ConversationHandler,
     MessageHandler, CallbackQueryHandler, filters
@@ -37,6 +43,23 @@ def jalali_to_gregorian_date(jalali_str):
 def format_currency(n):
     return f"{n:,.2f}"
 
+def main_reply_keyboard():
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("➕ افزودن وام جدید"), KeyboardButton("💼 وام‌های من")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        selective=False,
+    )
+
+def main_menu_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")],
+        [InlineKeyboardButton("💼 وام‌های من", callback_data="menu|myloans")],
+        [InlineKeyboardButton("ℹ️ راهنما", callback_data="menu|help")]
+    ])
+
 # Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -47,7 +70,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.add(user)
         session.commit()
     await update.message.reply_text(
-        "سلام! خوش اومدی.\nبرای افزودن وام /addloan و برای دیدن وام‌ها /myloans رو بزن."
+        "سلام! خوش اومدی 👋\nاز دکمه‌های پایین برای افزودن یا مشاهده وام استفاده کن.",
+        reply_markup=main_reply_keyboard()
     )
 
 # Add loan conversation
@@ -60,6 +84,7 @@ async def addloan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ارسال پیام جدید به‌جای ادیت، تا محدودیت‌های ادیت مزاحم نشوند
         await query.message.reply_text("نام بانک را وارد کنید:")
     else:
+        context.user_data.clear()
         await update.message.reply_text("نام بانک را وارد کنید:")
     return ADD_BANK
 
@@ -188,10 +213,6 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.commit()
 
     # confirmation message + menu
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")],
-        [InlineKeyboardButton("💼 وام‌های من", callback_data="menu|myloans")]
-    ])
     text = (
         f"✅ وام با موفقیت ثبت شد!\n\n"
         f"بانک: {loan.bank}\n"
@@ -201,7 +222,12 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"تاریخ اولین قسط (شمسی): {context.user_data['first_payment_jalali']}\n"
         f"یادآوری: {days} روز قبل"
     )
-    await query.edit_message_text(text, reply_markup=kb)
+    await query.edit_message_text(text, reply_markup=main_menu_markup())
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="از منوی پایین هر زمان خواستی ادامه بده 👇",
+        reply_markup=main_reply_keyboard()
+    )
     return ConversationHandler.END
 
 # Menu callback (after confirmation)
@@ -210,41 +236,67 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data  # menu|add or menu|myloans
 
-    if data == "menu|add":
-        # این مسیر در handler اختصاصی شروع مکالمه مدیریت می‌شود.
-        # اینجا فقط برای سازگاری قدیمی پیام راهنما می‌فرستیم (بدون تغییر state).
-        context.user_data.clear()
-        await query.message.reply_text("نام بانک را وارد کنید:")
-        return
-
-    elif data == "menu|myloans":
+    if data == "menu|myloans":
         await myloans_list(update, context)
         return ConversationHandler.END
 
+    elif data == "menu|help":
+        await query.edit_message_text(
+            "برای ثبت وام جدید، دکمه «➕ افزودن وام جدید» رو بزن.\n"
+            "برای دیدن وام‌ها، دکمه «💼 وام‌های من» رو انتخاب کن.\n"
+            "در هر مرحله اگر به منوی اصلی برگشتی، دوباره از همین گزینه‌ها استفاده کن.",
+            reply_markup=main_menu_markup()
+        )
+        await query.message.reply_text(
+            "از دکمه‌های پایین هم می‌تونی استفاده کنی 👇",
+            reply_markup=main_reply_keyboard()
+        )
+        return ConversationHandler.END
+
+    elif data == "menu|home":
+        await query.edit_message_text(
+            "منوی اصلی 👇",
+            reply_markup=main_menu_markup()
+        )
+        await query.message.reply_text(
+            "منوی اصلی 👇",
+            reply_markup=main_reply_keyboard()
+        )
+        return ConversationHandler.END
+
     else:
-        await query.message.reply_text("دستور ناشناخته.")
+        await query.message.reply_text("دستور ناشناخته.", reply_markup=main_reply_keyboard())
 
 # myloans command / handler
 async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # پشتیبانی از هر دو حالت: CommandHandler یا CallbackQuery
-    if isinstance(update, Update) and update.callback_query:
-        query = update.callback_query
+    query = update.callback_query if getattr(update, "callback_query", None) else None
+    if query:
         await query.answer()
         chat_id = query.message.chat.id
-        send_func = query.edit_message_text
     else:
         chat_id = update.effective_chat.id
-        send_func = update.message.reply_text
 
     session = get_session()
     user = session.query(User).filter_by(chat_id=chat_id).first()
     if not user:
-        await send_func("📋 شما هنوز ثبت‌نام نکردید. اول دستور /start رو بزن.")
+        text = "📋 شما هنوز ثبت‌نام نکردید. اول دستور /start رو بزن."
+        if query:
+            await query.edit_message_text(text, reply_markup=main_menu_markup())
+            await query.message.reply_text("منوی اصلی 👇", reply_markup=main_reply_keyboard())
+        else:
+            await update.message.reply_text(text, reply_markup=main_menu_markup())
+            await update.message.reply_text("منوی اصلی 👇", reply_markup=main_reply_keyboard())
         return
 
     loans = session.query(Loan).filter_by(user_id=user.id).all()
     if not loans:
-        await send_func("💼 هنوز هیچ وامی ثبت نکردی. با دستور /addloan شروع کن.")
+        text = "💼 هنوز هیچ وامی ثبت نکردی. از دکمه «➕ افزودن وام جدید» استفاده کن."
+        if query:
+            await query.edit_message_text(text, reply_markup=main_menu_markup())
+            await query.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
+        else:
+            await update.message.reply_text(text, reply_markup=main_menu_markup())
+            await update.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
         return
 
     text_lines = ["💼 فهرست وام‌های شما:"]
@@ -253,17 +305,15 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text_lines.append(f"🔸 {loan.id}. {loan.bank} — {loan.loan_name}")
         buttons.append([InlineKeyboardButton(f"جزئیات وام {loan.id}", callback_data=f"loan|detail|{loan.id}")])
 
+    buttons.append([InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")])
+    buttons.append([InlineKeyboardButton("🔙 منوی اصلی", callback_data="menu|home")])
     keyboard = InlineKeyboardMarkup(buttons)
-    await send_func("\n".join(text_lines), reply_markup=keyboard)
-
-# entry point to start add-loan conversation via inline button (menu|add)
-async def menu_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    # start fresh conversation state
-    context.user_data.clear()
-    await query.edit_message_text("نام بانک را وارد کنید:")
-    return ADD_BANK
+    if query:
+        await query.edit_message_text("\n".join(text_lines), reply_markup=keyboard)
+        await query.message.reply_text("برای ادامه از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
+    else:
+        await update.message.reply_text("\n".join(text_lines), reply_markup=keyboard)
+        await update.message.reply_text("برای ادامه از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
 
 # pay callback (mark installment paid)
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,6 +384,18 @@ async def loan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(buttons))
 
 
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "منوی اصلی 👇"
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(text, reply_markup=main_menu_markup())
+        await query.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
+    elif update.message:
+        await update.message.reply_text(text, reply_markup=main_menu_markup())
+        await update.message.reply_text("از دکمه‌های پایین استفاده کن 👇", reply_markup=main_reply_keyboard())
+
+
 # Scheduled job: send reminders daily
 async def daily_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
@@ -375,7 +437,11 @@ def main():
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("addloan", addloan_start),
-            CallbackQueryHandler(addloan_start, pattern=r"^menu\|add$")
+            CallbackQueryHandler(addloan_start, pattern=r"^menu\|add$"),
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & filters.Regex(r"^➕ افزودن وام جدید$"),
+                addloan_start
+            ),
         ],
         states={
             ADD_BANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_bank)],
@@ -391,6 +457,11 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
+    app.add_handler(CommandHandler("menu", show_main_menu))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r"^💼 وام‌های من$"),
+        myloans_list
+    ))
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern=r"^rem\|"))
     # exclude menu|add here so ConversationHandler entry point handles it
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu\|(?!add$)"))
