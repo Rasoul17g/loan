@@ -3,3 +3,4 @@ DB_URL = "sqlite:///loans.db"
 TIMEZONE = "Europe/Amsterdam"  # default timezone
 # Optional: set the hour when the daily job runs (0-23), else it will run every 24h from start
 DAILY_JOB_HOUR_UTC = None
+ADMIN_CHAT_ID = 257464496

@@ -1,6 +1,5 @@
-# models.py
 from sqlalchemy import (
-    Column, Integer, String, Float, Date, Boolean, ForeignKey, DateTime, Enum
+    Column, Integer, String, Float, Date, Boolean, ForeignKey, DateTime
 )
 from sqlalchemy.orm import relationship, declarative_base
 import enum
@@ -20,6 +19,7 @@ class User(Base):
 
     loans = relationship("Loan", back_populates="user")
 
+
 class Loan(Base):
     __tablename__ = "loans"
     id = Column(Integer, primary_key=True)
@@ -30,15 +30,20 @@ class Loan(Base):
     annual_interest_rate = Column(Float)
     term_months = Column(Integer)
     payment_cycle = Column(String, default="monthly")
-    first_payment_date = Column(Date)  # stored as Gregorian date
+    first_payment_date = Column(Date)
     installments_paid = Column(Integer, default=0)
-    reminder_days_before = Column(Integer, default=1)  # 1/2/3
+    reminder_days_before = Column(Integer, default=1)
+
+    # ⭐ ستون جدید برای وضعیت وام
+    status = Column(String, default="active")  
+    # active | completed | deleted
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="loans")
     installments = relationship("Installment", back_populates="loan", cascade="all, delete-orphan")
+
 
 class Installment(Base):
     __tablename__ = "installments"

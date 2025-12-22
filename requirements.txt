@@ -1,4 +1,4 @@
-python-telegram-bot==20.6
+python-telegram-bot==20.7
 SQLAlchemy==1.4.51
 jdatetime==3.8.1
 python-dateutil==2.8.2

@@ -23,11 +23,17 @@ from logic import calculate_amortization
 from calendar_helper import build_month_keyboard
 from config import BOT_TOKEN, TIMEZONE
 
+# backup service (make sure backup_service.py exists and is configured to use loans.db and backup.db)
+import backup_service
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Conversation states
-(ADD_BANK, ADD_PRINCIPAL, ADD_RATE, ADD_TERM, ADD_CALENDAR, ADD_REMINDER) = range(6)
+(ADD_BANK, ADD_PRINCIPAL, ADD_RATE, ADD_TERM, ADD_CALENDAR, ADD_REMINDER, ADD_PREV_PAID, DELETE_SELECT) = range(8)
+
+# Backup interval in hours (fixed)
+BACKUP_INTERVAL_HOURS = 6  # every 6 hours
 
 # Helpers
 def get_session():
@@ -64,7 +70,10 @@ def main_reply_keyboard():
                 KeyboardButton("➕ افزودن وام جدید"),
                 KeyboardButton("💼 وام‌های من"),
             ],
-            [KeyboardButton("📅 سررسیدهای نزدیک")],
+            [KeyboardButton("📅 سررسیدهای نزدیک"),
+             KeyboardButton("🗑️ حذف وام"),
+            ],
+            
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -77,7 +86,8 @@ def main_menu_markup():
         [InlineKeyboardButton("➕ افزودن وام جدید", callback_data="menu|add")],
         [InlineKeyboardButton("💼 وام‌های من", callback_data="menu|myloans")],
         [InlineKeyboardButton("📅 سررسیدهای نزدیک", callback_data="menu|due")],
-        [InlineKeyboardButton("ℹ️ راهنما", callback_data="menu|help")]
+        [InlineKeyboardButton("ℹ️ راهنما", callback_data="menu|help")],
+        [InlineKeyboardButton("🗑️ حذف وام", callback_data="menu|delete")],
     ])
 
 
@@ -105,6 +115,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_reply_keyboard()
     )
 
+async def addloan_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    if getattr(update, "callback_query", None):
+        try:
+            await update.callback_query.edit_message_text("❌ فرآیند ثبت وام لغو شد.")
+        except:
+            pass
+    else:
+        await update.message.reply_text("❌ فرآیند ثبت وام لغو شد.", reply_markup=main_reply_keyboard())
+    return ConversationHandler.END
+
 # Add loan conversation
 async def addloan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Support both /addloan (message) and inline button (callback query)
@@ -113,46 +134,46 @@ async def addloan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         context.user_data.clear()
         # ارسال پیام جدید به‌جای ادیت، تا محدودیت‌های ادیت مزاحم نشوند
-        await query.message.reply_text("نام بانک را وارد کنید:")
+        await query.message.reply_text("نام بانک را وارد کنید: \n(برای لغو، /cancel را بزنید) ")
     else:
         context.user_data.clear()
-        await update.message.reply_text("نام بانک را وارد کنید:")
+        await update.message.reply_text("نام بانک را وارد کنید: \n(برای لغو، /cancel را بزنید) ")
     return ADD_BANK
 
 async def addloan_bank(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['bank'] = update.message.text.strip()
-    await update.message.reply_text("مبلغ اصل وام (اعداد فقط، بدون ویرگول):")
+    await update.message.reply_text("مبلغ اصل وام (اعداد فقط، بدون ویرگول): \n(برای لغو، /cancel را بزنید) ")
     return ADD_PRINCIPAL
 
 async def addloan_principal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['principal'] = float(update.message.text.strip())
     except:
-        await update.message.reply_text("مبلغ نامعتبر است، لطفاً فقط عدد وارد کنید.")
+        await update.message.reply_text("مبلغ نامعتبر است، لطفاً فقط عدد وارد کنید. \n(برای لغو، /cancel را بزنید)")
         return ADD_PRINCIPAL
-    await update.message.reply_text("نرخ بهره سالانه (مثلاً 18.5):")
+    await update.message.reply_text("نرخ بهره سالانه (مثلاً 18.5): \n(برای لغو، /cancel را بزنید)")
     return ADD_RATE
 
 async def addloan_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['rate'] = float(update.message.text.strip())
     except:
-        await update.message.reply_text("نرخ نامعتبر است، دوباره وارد کن.")
+        await update.message.reply_text("نرخ نامعتبر است، دوباره وارد کن.\n(برای لغو، /cancel را بزنید)")
         return ADD_RATE
-    await update.message.reply_text("مدت وام به ماه (مثلاً 36):")
+    await update.message.reply_text("مدت وام به ماه (مثلاً 36):\n(برای لغو، /cancel را بزنید)")
     return ADD_TERM
 
 async def addloan_term(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         context.user_data['term'] = int(update.message.text.strip())
     except:
-        await update.message.reply_text("مدت نامعتبر است، عدد ماه وارد کن.")
+        await update.message.reply_text("مدت نامعتبر است، عدد ماه وارد کن.\n(برای لغو، /cancel را بزنید)")
         return ADD_TERM
 
     # show initial jalali month keyboard for selection
     now_j = jdatetime.date.today()
     kb = build_month_keyboard(now_j.year, now_j.month, prefix="cal")
-    await update.message.reply_text("تاریخ اولین پرداخت را از تقویم زیر انتخاب کن (شمسی):", reply_markup=kb)
+    await update.message.reply_text("تاریخ اولین پرداخت را از تقویم زیر انتخاب کن (شمسی):\n(برای لغو، /cancel را بزنید)", reply_markup=kb)
     return ADD_CALENDAR
 
 # calendar callbacks
@@ -204,32 +225,59 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data  # rem|1
-    try:
-        days = int(data.split("|")[1])
-    except:
-        days = 1
+
+    days = int(query.data.split("|")[1])
     context.user_data['reminder_days'] = days
 
-    # Save loan to DB
+    # مرحله جدید → سؤال درباره اقساط قبلی
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("بله، پرداخت‌شده در نظر بگیر", callback_data="prevpaid|yes"),
+        ],
+        [
+            InlineKeyboardButton("خیر", callback_data="prevpaid|no"),
+        ]
+    ])
+
+    await query.edit_message_text(
+        "❓ آیا تا امروز تمام اقساط قبلی این وام را پرداخت کرده‌ای؟",
+        reply_markup=keyboard
+    )
+
+    return ADD_PREV_PAID
+
+async def prevpaid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    choice = query.data.split("|")[1]
+
     session = get_session()
     chat_id = query.message.chat.id
     user = session.query(User).filter_by(chat_id=chat_id).first()
+
+    # ساخت وام
     loan = Loan(
         user_id=user.id,
-        bank=context.user_data.get('bank', '---'),
-        loan_name=context.user_data.get('bank', 'Loan'),
-        principal=context.user_data.get('principal', 0.0),
-        annual_interest_rate=context.user_data.get('rate', 0.0),
-        term_months=context.user_data.get('term', 1),
+        bank=context.user_data['bank'],
+        loan_name=context.user_data['bank'],
+        principal=context.user_data['principal'],
+        annual_interest_rate=context.user_data['rate'],
+        term_months=context.user_data['term'],
         first_payment_date=jalali_to_gregorian_date(context.user_data['first_payment_jalali']),
-        reminder_days_before=days
+        reminder_days_before=context.user_data['reminder_days']
     )
     session.add(loan)
     session.commit()
 
-    # generate installments
-    schedule = calculate_amortization(loan.principal, loan.annual_interest_rate, loan.term_months, loan.first_payment_date)
+    # ساخت اقساط
+    schedule = calculate_amortization(
+        loan.principal,
+        loan.annual_interest_rate,
+        loan.term_months,
+        loan.first_payment_date
+    )
+
     for row in schedule:
         inst = Installment(
             loan_id=loan.id,
@@ -243,7 +291,22 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.add(inst)
     session.commit()
 
-    # confirmation message + menu
+    # اگر کاربر گفت اقساط قبلی پرداخت شده‌اند
+    if choice == "yes":
+        today = get_local_today()
+        past_insts = session.query(Installment).filter(
+            Installment.loan_id == loan.id,
+            Installment.due_date < today
+        ).all()
+
+        for p in past_insts:
+            p.is_paid = True
+            p.paid_amount = p.amount_total
+            p.paid_at = datetime.datetime.utcnow()
+
+        session.commit()
+
+    # پیام موفقیت
     text = (
         f"✅ وام با موفقیت ثبت شد!\n\n"
         f"بانک: {loan.bank}\n"
@@ -251,14 +314,13 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"نرخ سالیانه: {loan.annual_interest_rate}%\n"
         f"مدت: {loan.term_months} ماه\n"
         f"تاریخ اولین قسط (شمسی): {context.user_data['first_payment_jalali']}\n"
-        f"یادآوری: {days} روز قبل"
+        f"یادآوری: {loan.reminder_days_before} روز قبل"
     )
+
     await query.edit_message_text(text, reply_markup=main_menu_markup())
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="از منوی پایین هر زمان خواستی ادامه بده 👇",
-        reply_markup=main_reply_keyboard()
-    )
+    await context.bot.send_message(chat_id=chat_id, text="از منوی پایین ادامه بده 👇", reply_markup=main_reply_keyboard())
+
+    session.close()
     return ConversationHandler.END
 
 # Menu callback (after confirmation)
@@ -361,6 +423,32 @@ async def due_range_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(text, reply_markup=due_range_markup())
     finally:
         session.close()
+#delete_loan
+async def delete_loan_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
+    chat_id = update.effective_chat.id
+    user = session.query(User).filter_by(chat_id=chat_id).first()
+
+    if not user:
+        await update.message.reply_text("اول /start را بزن.", reply_markup=main_reply_keyboard())
+        return
+
+    loans = session.query(Loan).filter_by(user_id=user.id).all()
+    if not loans:
+        await update.message.reply_text("هیچ وامی برای حذف وجود ندارد.", reply_markup=main_reply_keyboard())
+        return
+
+    # ساخت دکمه‌های انتخاب وام
+    keyboard = []
+    for loan in loans:
+        display = loan.loan_name or loan.bank or f"وام #{loan.id}"
+        keyboard.append([InlineKeyboardButton(f"حذف {display}", callback_data=f"delete|select|{loan.id}")])
+
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu|home")])
+
+    await update.message.reply_text("کدام وام را می‌خواهی حذف کنی؟", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
 
 # myloans command / handler
 async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -387,7 +475,7 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query:
             await query.edit_message_text(text, reply_markup=main_menu_markup())
         else:
-            await update.message.reply_text(text, reply_markup=main_menu_markup())
+            await update.message.reply_text(text, reply_markup=main_reply_keyboard())
         return
 
     text_lines = ["💼 فهرست وام‌های شما:"]
@@ -406,6 +494,7 @@ async def myloans_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("\n".join(text_lines), reply_markup=keyboard)
 
+
 # pay callback (mark installment paid)
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -415,10 +504,10 @@ async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
     inst = session.query(Installment).filter_by(id=inst_id).first()
     if not inst:
-        await query.edit_message_text("قسط پیدا نشد.")
+        await query.edit_message.reply_text("قسط پیدا نشد.")
         return
     if inst.is_paid:
-        await query.edit_message_text("این قسط قبلاً پرداخت شده است.")
+        await query.edit_message.reply_text("این قسط قبلاً پرداخت شده است.")
         return
     inst.is_paid = True
     inst.paid_at = datetime.datetime.utcnow()
@@ -462,7 +551,7 @@ async def loan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         status = "✅ پرداخت‌شده" if inst.is_paid else "❌ در انتظار پرداخت"
         text_lines.append(
             f"قسط {inst.sequence_number}: {format_currency(inst.amount_total)} تومان — "
-            f"تاریخ {jd.year}/{jd.month}/{inst.due_date.day} — {status}"
+            f"تاریخ {jd.year}/{jd.month}/{jd.day} — {status}"  # ← از jd.day استفاده شود
         )
 
     # دکمه‌ها برای پرداخت یا بازگشت
@@ -473,6 +562,52 @@ async def loan_detail_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu|myloans")])
 
     await query.edit_message_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(buttons))
+
+#delete_loan
+async def delete_loan_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    loan_id = int(query.data.split("|")[2])
+    context.user_data["delete_target_id"] = loan_id
+
+    await query.edit_message_text(
+        f"❗ آیا مطمئن هستی که می‌خوای وام شماره {loan_id} را حذف کنی؟",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ بله حذف کن", callback_data="delete|yes")],
+            [InlineKeyboardButton("❌ نه، منصرف شدم", callback_data="delete|no")],
+        ])
+    )
+
+async def delete_loan_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    loan_id = context.user_data.get("delete_target_id")
+    session = get_session()
+    loan = session.query(Loan).filter_by(id=loan_id).first()
+
+    if loan:
+        session.delete(loan)
+        session.commit()
+        await query.edit_message_text(
+            f"🗑️ وام شماره {loan_id} با موفقیت حذف شد.",
+            reply_markup=main_menu_markup()
+        )
+    else:
+        await query.edit_message_text("⚠️ وام پیدا نشد.", reply_markup=main_menu_markup())
+
+    session.close()
+
+async def delete_loan_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "❌ عملیات حذف لغو شد.",
+        reply_markup=main_menu_markup()
+    )
+
+
 
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -514,11 +649,21 @@ async def daily_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
                 except Exception as e:
                     logger.error("Error sending reminder: %s", e)
-            # check if today is exactly due date and unpaid AND it's last installment -> send congrats? 
-            # For final installment, if due_date == today, we might want to congratulate when paid. 
     session.close()
 
+# -----------------------
+# Backup runner (run sync backup in executor)
+# -----------------------
+async def _run_backup_in_executor():
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, backup_service.run_backup)
+    except Exception:
+        logger.exception("Backup job raised exception")
+
+# -----------------------
 # Setup application
+# -----------------------
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -540,7 +685,10 @@ def main():
             ADD_CALENDAR: [CallbackQueryHandler(calendar_callback, pattern=r"^cal\|")],
             # reminder callback
         },
-        fallbacks=[],
+        fallbacks=[
+            CommandHandler("cancel", addloan_cancel),
+            MessageHandler(filters.Regex(r"^لغو$"), addloan_cancel)
+        ],
         allow_reentry=True
     )
 
@@ -555,6 +703,16 @@ def main():
         filters.TEXT & ~filters.COMMAND & filters.Regex(r"^📅 سررسیدهای نزدیک$"),
         open_due_menu_from_message
     ))
+    app.add_handler(MessageHandler(
+    filters.TEXT & ~filters.COMMAND & filters.Regex(r"^🗑️ حذف وام$"),
+    delete_loan_start
+))
+
+    app.add_handler(CallbackQueryHandler(delete_loan_start, pattern=r"^menu\|delete$"))
+    app.add_handler(CallbackQueryHandler(delete_loan_confirm, pattern=r"^delete\|select\|"))
+    app.add_handler(CallbackQueryHandler(delete_loan_execute, pattern=r"^delete\|yes$"))
+    app.add_handler(CallbackQueryHandler(delete_loan_cancel, pattern=r"^delete\|no$"))
+
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern=r"^rem\|"))
     app.add_handler(CallbackQueryHandler(due_range_callback, pattern=r"^due\|"))
     # exclude menu|add here so ConversationHandler entry point handles it
@@ -562,9 +720,14 @@ def main():
     app.add_handler(CallbackQueryHandler(loan_detail_callback, pattern=r"^loan\|detail\|"))
     app.add_handler(CallbackQueryHandler(pay_callback, pattern=r"^pay\|"))
     app.add_handler(CommandHandler("myloans", myloans_list))
+    app.add_handler(CallbackQueryHandler(prevpaid_callback, pattern=r"^prevpaid\|"))
 
-    # schedule daily job: run every 24h (first run after 10 seconds) — adjust if needed
+    # schedule daily job: run reminders (existing)
     app.job_queue.run_repeating(daily_reminder_job, interval=24*60*60, first=10)
+
+    # schedule backup job (fixed interval)
+    # run the synchronous backup in a thread to avoid blocking the event loop
+    app.job_queue.run_repeating(lambda ctx: asyncio.create_task(_run_backup_in_executor()), interval=int(BACKUP_INTERVAL_HOURS*3600), first=10)
 
     logger.info("Bot started")
     app.run_polling()
