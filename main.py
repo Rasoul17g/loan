@@ -171,55 +171,160 @@ async def addloan_term(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_TERM
 
     # show initial jalali month keyboard for selection
-    now_j = jdatetime.date.today()
-    kb = build_month_keyboard(now_j.year, now_j.month, prefix="cal")
-    await update.message.reply_text("تاریخ اولین پرداخت را از تقویم زیر انتخاب کن (شمسی):\n(برای لغو، /cancel را بزنید)", reply_markup=kb)
+    # now_j = jdatetime.date.today()
+    # kb = build_month_keyboard(now_j.year, now_j.month, prefix="cal")
+    # await update.message.reply_text("تاریخ اولین پرداخت را از تقویم زیر انتخاب کن (شمسی):\n(برای لغو، /cancel را بزنید)", reply_markup=kb)
+    # return ADD_CALENDAR
+    current_year = jdatetime.date.today().year
+    years = list(range(current_year, current_year - 30, -1))
+
+    keyboard = []
+    for y in years:
+        keyboard.append([InlineKeyboardButton(str(y), callback_data=f"cal_year|{y}")])
+
+    keyboard.append([InlineKeyboardButton("❌ لغو", callback_data="cal_cancel")])
+
+    await update.message.reply_text(
+        "📅 سال اولین قسط را انتخاب کن:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ADD_CALENDAR
 
+
 # calendar callbacks
+# async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     query = update.callback_query
+#     await query.answer()
+#     data = query.data  # e.g., cal|day|1403-08-25 or cal|prev|1403-08
+#     if data == "noop":
+#         return
+#     parts = data.split("|")
+#     prefix = parts[0]
+#     if parts[1] == "cancel":
+#         await query.edit_message_text("ثبت وام لغو شد.")
+#         return ConversationHandler.END
+#     if parts[1] == "prev" or parts[1] == "next":
+#         _, dir_, ym = parts
+#         y, m = [int(x) for x in ym.split("-")]
+#         if dir_ == "prev":
+#             if m == 1:
+#                 y -= 1; m = 12
+#             else:
+#                 m -= 1
+#         else:
+#             if m == 12:
+#                 y += 1; m = 1
+#             else:
+#                 m += 1
+#         kb = build_month_keyboard(y, m, prefix="cal")
+#         await query.edit_message_reply_markup(kb)
+#         return
+#     if parts[1] == "day":
+#         jalali_date = parts[2]
+#         # save selected date in user_data
+#         context.user_data['first_payment_jalali'] = jalali_date
+#         # Ask for reminder days (1/2/3)
+#         markup = InlineKeyboardMarkup([
+#             [InlineKeyboardButton("1 روز قبل", callback_data="rem|1"),
+#              InlineKeyboardButton("2 روز قبل", callback_data="rem|2"),
+#              InlineKeyboardButton("3 روز قبل", callback_data="rem|3")]
+#         ])
+#         await query.edit_message_text(
+#             f"📅 تاریخ اولین قسط ثبت شد: {jalali_date}\n\n"
+#             f"الان انتخاب کن چند روز قبل از سررسید قسط، ربات بهت پیام یادآوری بده 👇",
+#             reply_markup=markup
+#         )
+#         return
+
 async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data  # e.g., cal|day|1403-08-25 or cal|prev|1403-08
-    if data == "noop":
-        return
-    parts = data.split("|")
-    prefix = parts[0]
-    if parts[1] == "cancel":
-        await query.edit_message_text("ثبت وام لغو شد.")
+    data = query.data
+
+    # لغو
+    if data == "cal_cancel":
+        await query.edit_message_text("❌ ثبت وام لغو شد.")
         return ConversationHandler.END
-    if parts[1] == "prev" or parts[1] == "next":
-        _, dir_, ym = parts
-        y, m = [int(x) for x in ym.split("-")]
-        if dir_ == "prev":
-            if m == 1:
-                y -= 1; m = 12
-            else:
-                m -= 1
-        else:
-            if m == 12:
-                y += 1; m = 1
-            else:
-                m += 1
-        kb = build_month_keyboard(y, m, prefix="cal")
-        await query.edit_message_reply_markup(kb)
-        return
-    if parts[1] == "day":
-        jalali_date = parts[2]
-        # save selected date in user_data
-        context.user_data['first_payment_jalali'] = jalali_date
-        # Ask for reminder days (1/2/3)
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("1 روز قبل", callback_data="rem|1"),
-             InlineKeyboardButton("2 روز قبل", callback_data="rem|2"),
-             InlineKeyboardButton("3 روز قبل", callback_data="rem|3")]
-        ])
+
+    parts = data.split("|")
+
+    # ---------- انتخاب سال ----------
+    if parts[0] == "cal_year":
+        year = int(parts[1])
+        context.user_data["cal_year"] = year
+
+        keyboard = []
+        for m in range(1, 13):
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{m}",
+                    callback_data=f"cal_month|{year}|{m}"
+                )
+            ])
+
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="cal_cancel")])
+
         await query.edit_message_text(
-            f"📅 تاریخ اولین قسط ثبت شد: {jalali_date}\n\n"
-            f"الان انتخاب کن چند روز قبل از سررسید قسط، ربات بهت پیام یادآوری بده 👇",
+            "📅 ماه اولین قسط را انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---------- انتخاب ماه ----------
+    if parts[0] == "cal_month":
+        year = int(parts[1])
+        month = int(parts[2])
+        context.user_data["cal_month"] = month
+
+        days_in_month = jdatetime.j_days_in_month[month - 1]
+
+        keyboard = []
+        row = []
+        for d in range(1, days_in_month + 1):
+            row.append(
+                InlineKeyboardButton(
+                    str(d),
+                    callback_data=f"cal_day|{year}|{month}|{d}"
+                )
+            )
+            if len(row) == 7:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="cal_cancel")])
+
+        await query.edit_message_text(
+            "📅 روز اولین قسط را انتخاب کن:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    # ---------- انتخاب روز ----------
+    if parts[0] == "cal_day":
+        year = int(parts[1])
+        month = int(parts[2])
+        day = int(parts[3])
+
+        jalali_date = f"{year}-{month:02d}-{day:02d}"
+        context.user_data["first_payment_jalali"] = jalali_date
+
+        markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("1 روز قبل", callback_data="rem|1"),
+                InlineKeyboardButton("2 روز قبل", callback_data="rem|2"),
+                InlineKeyboardButton("3 روز قبل", callback_data="rem|3"),
+            ]
+        ])
+
+        await query.edit_message_text(
+            f"📅 تاریخ اولین قسط انتخاب شد:\n{jalali_date}\n\n"
+            "حالا بگو چند روز قبل یادآوری بدم 👇",
             reply_markup=markup
         )
         return
+
 
 # reminder callback (from inline keyboard after calendar)
 async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -682,7 +787,7 @@ def main():
             ADD_PRINCIPAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_principal)],
             ADD_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_rate)],
             ADD_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, addloan_term)],
-            ADD_CALENDAR: [CallbackQueryHandler(calendar_callback, pattern=r"^cal\|")],
+            ADD_CALENDAR: [CallbackQueryHandler(calendar_callback, pattern=r"^(cal_year|cal_month|cal_day|cal_cancel)")],
             # reminder callback
         },
         fallbacks=[
